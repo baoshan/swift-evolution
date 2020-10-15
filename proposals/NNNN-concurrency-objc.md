@@ -1,0 +1,289 @@
+# Concurrency Interoperability with Objective-C
+
+* Proposal: [SE-NNNN](NNNN-concurrency-objc.md)
+* Authors: [Doug Gregor](https://github.com/DougGregor)
+* Review Manager: TBD
+* Status: **Awaiting implementation**
+* Implementation: Available in [recent `main` snapshots](https://swift.org/download/#snapshots) behind the flag `-Xfrontend -enable-experimental-concurrency`
+
+## Introduction
+
+Swift's concurrency feature involves asynchronous functions and actors. While Objective-C does not have corresponding language features, asynchronous APIs are common in Objective-C, expressed manually through the use of completion handlers. This proposal provides bridging between Swift's concurrency features (e.g., `async` functions) and the convention-based expression of asynchronous functions in Objective-C. It is intended to allow the wealth of existing asynchronous Objective-C APIs to be immediately usable with Swift's concurrency model.
+
+For example, consider the following Objective-C API in [CloudKit](https://developer.apple.com/documentation/cloudkit/ckcontainer/1640387-fetchshareparticipantwithuserrec):
+
+```objc
+- (void)fetchShareParticipantWithUserRecordID:(CKRecordID *)userRecordID 
+                            completionHandler:(void (^)(CKShareParticipant * _Nullable, NSError * _Nullable))completionHandler;
+```
+
+This API is asynchronous. It delivers its result (or an error) via completion handler. The API directly translates into Swift:
+
+```swift
+func fetchShareParticipant(withUserRecordID userRecordID: CKRecord.ID, 
+         completionHandler: @escaping (CKShare.Participant?, Error?) -> Void)
+```
+
+Existing Swift code can call this API by passing a closure for the completion handler. This proposal provides an alternate Swift translation of the API into an `async` function, e.g.,
+
+```swift
+func fetchShareParticipant(withUserRecordID userRecordID: CKRecord.ID) async throws -> CKShare.Participant?
+```
+
+Swift callers can invoke `fetchShareParticipant(withUserRecordID:)` within an `await` expression:
+
+```swift
+guard let participant = await try container.fetchShareParticipant(withUserRecordID: user) else {
+  return nil
+}
+```
+
+Swift-evolution thread: [Discussion thread topic for that proposal](https://forums.swift.org/)
+
+## Motivation
+
+On Apple platforms, Swift's tight integration with Objective-C APIs is an important part of the developer experience. There are several core features:
+
+* Objective-C classes, protocols, and methods can be used directly from Swift.
+* Swift classes can subclass Objective-C classes.
+* Swift classes can declare conformance to Objective-C protocols.
+* Swift classes, protocols, and methods can be made available to Objective-C via the `@objc` attribute.
+
+Asynchronous APIs abound in Objective-C code: the iOS 14.0 SDK includes nearly 1,000 methods that accept completion handlers. These include methods that one could call directly from Swift, methods that one would override in a Swift-defined subclass, and methods in protocols that one would conform to. Supporting these use cases in Swift's concurrency model greatly expands the reach of this new feature. 
+
+## Proposed solution
+
+The proposed solution provides interoperability between Swift's concurrency constructs and Objective-C in various places. It has several inter-dependent pieces:
+
+* Translate Objective-C completion-handler methods into `async` methods in Swift.
+* Allow `async` methods defined in Swift to be `@objc`, in which case they are exported as completion-handler methods.
+* Provide inference rules for asynchronous handlers.
+* Provide Objective-C attributes to tune the translation of Objective-C APIs for concurrency:
+  * Control over how completion-handler-based APIs are translated into `async` Swift functions.
+  * Specify when an Objective-C APIs is part of a particular global actor.
+  * Specify when an Objective-C API is intended to be an asynchronous handler.
+
+The detailed design section describes the specific rules and heuristics being applied. However, the best way to evaluate the overall effectiveness of the translation is to see it's effect over a large number of Objective-C APIs. [This pull request](https://github.com/DougGregor/swift-concurrency-objc/pull/1) demonstrates the effect that this proposal has on the Swift translations of Objective-C APIs across the Apple iOS, macOS, tvOS, and watchOS SDKs.
+
+## Detailed design
+
+### Asynchronous completion-handler methods
+
+An Objective-C method potentially an asynchronous completion-handler method if it meets the following requirements:
+
+* The method has a completion handler parameter, which is an Objective-C block that will receive the "result" of the asynchronous computation. It must meet the following additional constraints:
+  * It has a `void` result type.
+  * It is called exactly once along all execution paths through the implementation.
+  * If the method can deliver an error, one of the parameters of the block is of type `NSError *` that is not `_Nonnull`. A non-nil `NSError *` value indicates that an error occurred.
+* The method itself has a `void` result type, because all results are delivered by the completion handler block.
+
+An Objective-C method that is potentially an asynchronous completion-handler method will be translated into an `async` method when it is either annotated explicitly with an appropriate `swift_async` attribute (described in the section on Objective-C attributes) or is implicitly inferred when the following heuristics successfully identify the completion handler parameter:
+
+* If the method has a single parameter, and the suffix of the first selector piece is the phrase `WithCompletion` or `WithCompletionHandler`, the sole parameter is the completion handler parameter. The matching phrase will be removed from the base name of the function when it is imported.
+* If the method has more than one parameter, the last parameter is the completion handler parameter if its selector piece or parameter name is `completion`, `completionHandler`, or `withCompletionHandler`.
+
+When the completion handler parameter is inferred, the presence of an `NSError *` parameter that is not `_Nonnull` in the completion handler block type indicates that the translated method can deliver an error.
+
+The translation of an asynchronous Objective-C completion-handler method into an `async` Swift method follows the normal translation procedure, with the following alterations:
+
+* The completion handler parameter is removed from the parameter list of the translated Swift method.
+* If the completion handler parameter was the only parameter, and was inferred using the suffix rule described above, the suffix (e.g., `WithCompletionHandler`) is removed from the base name of the method.
+* If the method can deliver an error, it is `throws` in addition to being `async`.
+* The parameter types of the completion handler block type are translated into the result type of the `async` method, subject to the following additional rules:
+  * If the method can deliver an error, the `NSError *` parameter is ignored. 
+  * If the method can deliver an error and a given parameter has the `_Nullable_on_error` nullability qualifier (see the section on Objective-C attributes below), it will be imported as non-optional.
+  * If there there are multiple parameter types, they will be combined into a tuple type.
+
+The following [AVFoundation](https://developer.apple.com/documentation/avfoundation/avassetimagegenerator/1388100-generatecgimagesasynchronously) API (modified slightly for exposition purposes) demonstrates how the inference rule plays out:
+
+```objc
+typedef void (^AVAssetImageGeneratorCompletionHandler)(CMTime, CGImageRef _Nullable_on_error, CMTime, AVAssetImageGeneratorResult, NSError * _Nullable);
+
+// ...
+
+- (void)generateCGImagesAsynchronouslyForTimes:(NSArray<NSValue *> *)requestedTimes 
+                             completionHandler:(AVAssetImageGeneratorCompletionHandler)handler;
+```
+
+Today, this is translated into the following completion-handle function in Swift:
+
+```swift
+func generateCGImagesAsynchronously(
+    forTimes requestedTimes: [NSValue], 
+    completionHandler handler: @escaping (CMTime, CGImage?, CMTime, AVAssetImageGenerator.Result, Error?) -> Void
+)
+```
+
+This will be translated into the following `async` function:
+
+```swift
+@objc func generateCGImagesAsynchronously(
+    forTimes requestedTimes: [NSValue]
+) async throws -> (CMTime, CGImage, CMTime, AVAssetImageGenerator.Result)
+```
+
+When the compiler sees a call to such a method, it effectively uses `withUnsafeContinuation` to form a continuation for the rest of the function, then wraps the given continuation in a closure. For example:
+
+```swift
+let (time, image, time, result) = await session.generateCGImagesAsynchronously(forTimes: times)
+```
+
+becomes pseudo-code similar to
+
+```swift
+try withUnsafeContinuation { continuation in 
+  session.generateCGImagesAsynchronously(
+      forTimes: times, 
+      completionHandler: { (requestedTime, image, actualTime, result, error) in
+        if let error = error { throw error }
+        continuation(requestedTime, image!, actualTime, result)
+      }
+  })
+```
+
+### Defining asynchronous `@objc` methods in Swift
+
+Many Swift entities can be exposed to Objective-C via the `@objc` attribute. With an `async` Swift method, the compiler will add an appropriate completion-handler parameter to the Objective-C method it creates, using what is effectively the inverse of the transformation described in the previous section, such that the Objective-C method produced is an asynchronous Objective-C completion-handler method. For example, a method such as:
+
+```swift
+@objc func perform(operation: String) async -> Int { ... }
+```
+
+will translate into the following Objective-C method:
+
+```objc
+-(void)performWithOperation:(NSString * _Nonnull)operation completionHandler:(void (^ _Nullable)(NSInteger))completionHandler;
+```
+
+The Objective-C method implementation synthesized by the compiler will create a detached task that calls the `async` Swift method `perform(operation:)` with the given string, then (if the completion handler argument is not `nil`) forwards the result to the completion handler.
+
+For an `async throws` method, the completion handler is extended with an `NSError *` parameter to indicate the error, and any non-nullable pointer type parameters are made `_Nullable`. For example, given:
+
+```swift
+@objc func performDangerousTrick(operation: String) async throws -> String { ... }
+```
+
+the resulting Objective-C method will have the following signature:
+
+```objc
+-(void)performDangerousTrickWithOperation(NSString * _Nonnull)operation completionHandler:(void (^ _Nullable)(NSString * _Nullable_on_error, NSError * _Nullable))completionHandler;
+```
+
+Again, the synthesized Objective-C method implementation will create a detached task that calls the `async throws` method `performDangerousTrick(operation:)`. If the method returns normally, the `String` result will be delivered to the completion handler in the first parameter and the second parameter (`NSError *`) will be passed `nil`. If the method throws, the first parameter will be passed `nil` (which is why it has been made `_Nullable_on_error` despite being non-optional in Swift) and the second parameter will receive the error. If there are non-pointer parameters, they will be passed zero-initialized memory in the non-error arguments to provide consistent behavior for callers. This can be demonstrated with Swift pseudo-code:
+
+```swift
+// Synthesized by the compiler
+@objc func performDangerousTrick(
+    operation: String, completionHandler: ((String?, Error?) -> Void)) {
+  runDetached {
+    do {
+      let operation = await try performDangerousTrick(operation: operation)
+      completionHandler?(operation, nil)
+    } catch error {
+      completionHandler?(nil, error)
+    }
+  }
+}
+```
+
+### Actor classes
+
+Actor classes can be `@objc` and will be available in Objective-C as are other classes. Actor classes require that their superclass (if there is one) also be an actor class. However, this proposal loosens that requirement slightly to allow an actor class to have `NSObject` as its superclass. This is conceptually safe because `NSObject` has no state (and its layout is effectively fixed that way), and makes it possible both for actor classes to be `@objc` and also implies conformance to `NSObjectProtocol`, which is required when conforming to a number of Objective-C protocols and is otherwise unimplementable in Swift. 
+
+A members of an actor class can only be `@objc` if it is either `async` or is outside of the actor's isolation domain. Synchronous code that is within the actor's isolation domain can only be invoked on `self` (in Swift). Objective-C does not have knowledge of actor isolation, so these members are not permitted to be exposed to Objective-C. For example:
+
+```swift
+actor class MyActor {
+  @objc func synchronous() { } // error: part of actor's isolation domain
+  @objc func asynchronous() async { } // okay: asynchronous
+  @objc @actorIndependent func independent() { } // okay: actor-independent
+  @objc @asyncHandler func handler() { } // okay: asynchronously executed
+}
+```
+
+### Inference of @asyncHandler on Objective-C methods
+
+Asynchronous handlers are synchronous functions whose bodies execute asynchronously. The `@asyncHandler` attribute can be applied to a requirement of a protocol and will then be inferred for a method that satisfies that requirement. This allows one to easily use asynchronous constructs when receiving a synchronous callback that requires no immediate action.
+
+Objective-C delegate protocols often use "did" methods to report on an action that occurred but doesn't necessarily need an immediate response. For example, the [`UICollectionViewDelegate` protocol](https://developer.apple.com/documentation/uikit/uicollectionviewdelegate) contains a number of "did" methods such as:
+
+```objc
+- (void)collectionView:(UICollectionView *)collectionView 
+didHighlightItemAtIndexPath:(NSIndexPath *)indexPath;
+```
+
+For Objective-C protocol methods with the word "did" in their name, either anywhere in the first selector piece or at the start of a subsequent selector piece, and that meet the form required for `@asyncHandler` (`void` return, no `inout` parameters, etc.), the `@asyncHandler` attribute will be inferred on the Swift API. For example, the above will be translate to:
+
+```swift
+@asyncHandler
+func collectionView(_ collectionView: UICollectionView, 
+          didHighlightItemAt indexPath: IndexPath)
+```
+
+### Completion handlers must be called exactly once
+
+A Swift `async` function will always suspend, return, or (if it throws) produce an error. For completion-handler APIs, it is important that the completion handler block be called exactly once on all paths, including when producing an error. Failure to do so will break the semantics of the caller, either by failing to continue or by executing the same code multiple times. While this is an existing problem, widespread use of `async` with incorrectly-implemented completion-handler APIs might exacerbate the issue.
+
+Fortunately, because the compiler itself is synthesizing the block that will be passed to completion-handler APIs, it can detect both problems be introducing an extra bit of state into the synthesized block to indicate that the block has been called. If the bit is already set when the block is called, then it has been called multiple times. If the bit is not set when the block is destroyed, it has not been called at all. While this does not fix the underlying problem, it can at least detect the issue consistently at run time.
+
+### Additional Objective-C attributes 
+
+The transformation of Objective-C completion-handler-based APIs to async Swift APIs could benefit from the introduction of additional annotations (in the form of attributes) to guide the process. For example:
+
+* `_Nullable_on_error`. Like `_Nullable`, indicates that a pointer can be null (or `nil`). `_Nullable_on_error` differs from `_Nullable` only for parameters to completion handler blocks. When the completion handler block's parameters are translated into the result type of an `async` method, the corresponding result will be non-optional.
+* `__attribute__((swift_async(...))`. An attribute to control the translation of an asynchronous completion-handler method to an `async` function. It has several operations within the parentheses:
+  * `__attribute__((swift_async(none))`. Disables the translation to `async`.  
+  * `__attribute__((swift_async(C))`. Specifies that the method should be translated into an `async` method, using the parameter at index `C` as the completion handler parameter.
+  * `__attribute__((swift_async(C, throws))`. Specifies that the method should be translated into an `async throws` method, using the parameter at index `C` as the completion handler.
+  * `__attribute__((swift_async(C, ..., swift_name("method(param1:param2:)"))))`. Specifies the Swift name that should be used for the `async` translation of the API.
+* `__attribute__((swift_attr("swift attribute")))`. A general-purpose Objective-C attribute to allow one to provide Swift attributes directly. In the context of concurrency, this allows Objective-C APIs to be described as `@asyncHandler` or to put them within a global actor (e.g., `@UIActor`).
+
+
+## Source compatibility
+
+Generally speaking, changes to the way in which Objective-C APIs are translated into Swift are source-breaking changes. To avoid breaking source compatibility, this proposal involves translating Objective-C asynchronous completion-handler methods as *both* their original completion-handler signatures and also with the new `async` signature. This allows existing Swift code bases to gradually adopt the `async` forms of API, rather than forcing (e.g.) an entire Swift module to adopt `async` all at once.
+
+Importing the same Objective-C API in two different ways causes some issues:
+
+* Overloading of synchronous and asynchronous APIs. Objective-C frameworks may have evolved to include both synchronous and asynchronous versions of the same API, e.g.,
+
+  ```objc
+  -(NSString *)lookupName;
+  -(void)lookupNameWithCompletionHandler:(void(^)(NSString *))completion;
+  ```
+  which will be translated into three different Swift methods:
+  
+  ```swift
+  @objc func lookupName() -> String
+  @objc func lookupName(withCompletionHandler: @escaping (String) -> Void)
+  @objc func lookupName() async -> String
+  ```
+  
+  The first and third signatures are identical except for being synchronous and asynchronous, respectively. The async/await design accounts for such overloading by favoring synchronous functions in synchronous contexts and asynchronous functions in asychronous contexts. This overloading should avoid breaking source compatibility.
+
+* Another issue is when an asychronous completion-handler method is part of an Objective-C protocol. For example, the [`NSURLSessionDataDelegate` protocol](https://developer.apple.com/documentation/foundation/nsurlsessiondatadelegate?language=objc) includes this protocol requirement:
+
+  ```objc
+  - (void)URLSession:(NSURLSession*)session 
+            dataTask:(NSURLSessionDataTask *)dataTask 
+  didReceiveResponse:(NSURLResponse *)response 
+completionHandler:(void (^)(NSURLSessionResponseDisposition disposition))completionHandler;
+  ```
+
+  Existing Swift code might implement this requirement in a conforming type using its completion-handler signature
+
+  ```swift
+  func URLSession(
+    _ NSURLSession, dataTask: NSURLSessionDataTask, didReceiveResponse: NSURLResponse,
+      completionHandler: (NSURLSessionResponseDisposition) -> Void) { ... }
+  ```
+
+  while Swift code designed to take advantage of the concurrency model would implement this requirement in a conforming type using its `async` signature
+
+  ```swift
+  func URLSession(_ NSURLSession, dataTask: NSURLSessionDataTask, didReceiveResponse: NSURLResponse) async -> NSURLSessionResponseDisposition { ... }
+  ```
+
+  Implementing both requirements would produce an error (due to two Swift methods having the same selector), but under the normal Swift rules implementing only one of the requirements will also produce an error (because the other requirement is unsatisfied). Swift’s checking of protocol conformances will be extended to handle the case where multiple (imported) requirements have the same Objective-C selector: in that case, only one of them will be required to be implemented.
+  
+* Overriding methods that have been translated into both completion-handler and `async` versions have a similar problem to protocol requirements: a Swift subclass can either override the completion-handler version or the `async` version, but not both. Objective-C callers will always call to the subclass version of the method, but Swift callers to the "other" signature will not unless the subclass's method is marked with `@objc dynamic`. Swift can infer that the `async` overrides of such methods are `@objc dynamic` to avoid this problem (because such `async` methods are new code). However, inferring `@objc dynamic` on existing completion-handler overrides can change the behavior of programs and break subclasses of the subclasses, so at best the compiler can warn about this situtation.
