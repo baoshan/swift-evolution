@@ -69,7 +69,7 @@ The detailed design section describes the specific rules and heuristics being ap
 
 ### Asynchronous completion-handler methods
 
-An Objective-C method potentially an asynchronous completion-handler method if it meets the following requirements:
+An Objective-C method is potentially an asynchronous completion-handler method if it meets the following requirements:
 
 * The method has a completion handler parameter, which is an Objective-C block that will receive the "result" of the asynchronous computation. It must meet the following additional constraints:
   * It has a `void` result type.
@@ -92,7 +92,7 @@ The translation of an asynchronous Objective-C completion-handler method into an
 * The parameter types of the completion handler block type are translated into the result type of the `async` method, subject to the following additional rules:
   * If the method can deliver an error, the `NSError *` parameter is ignored. 
   * If the method can deliver an error and a given parameter has the `_Nullable_on_error` nullability qualifier (see the section on Objective-C attributes below), it will be imported as non-optional.
-  * If there there are multiple parameter types, they will be combined into a tuple type.
+  * If there are multiple parameter types, they will be combined into a tuple type.
 
 The following [AVFoundation](https://developer.apple.com/documentation/avfoundation/avassetimagegenerator/1388100-generatecgimagesasynchronously) API (modified slightly for exposition purposes) demonstrates how the inference rule plays out:
 
@@ -135,8 +135,11 @@ try withUnsafeContinuation { continuation in
   session.generateCGImagesAsynchronously(
       forTimes: times, 
       completionHandler: { (requestedTime, image, actualTime, result, error) in
-        if let error = error { throw error }
-        continuation(requestedTime, image!, actualTime, result)
+        if let error = error {
+          continuation.resume(throwing: error)
+        } else {
+          continuation.resume(returning: (requestedTime, image!, actualTime, result))
+        }
       }
   })
 ```
@@ -190,7 +193,7 @@ Again, the synthesized Objective-C method implementation will create a detached 
 
 Actor classes can be `@objc` and will be available in Objective-C as are other classes. Actor classes require that their superclass (if there is one) also be an actor class. However, this proposal loosens that requirement slightly to allow an actor class to have `NSObject` as its superclass. This is conceptually safe because `NSObject` has no state (and its layout is effectively fixed that way), and makes it possible both for actor classes to be `@objc` and also implies conformance to `NSObjectProtocol`, which is required when conforming to a number of Objective-C protocols and is otherwise unimplementable in Swift. 
 
-A members of an actor class can only be `@objc` if it is either `async` or is outside of the actor's isolation domain. Synchronous code that is within the actor's isolation domain can only be invoked on `self` (in Swift). Objective-C does not have knowledge of actor isolation, so these members are not permitted to be exposed to Objective-C. For example:
+A member of an actor class can only be `@objc` if it is either `async` or is outside of the actor's isolation domain. Synchronous code that is within the actor's isolation domain can only be invoked on `self` (in Swift). Objective-C does not have knowledge of actor isolation, so these members are not permitted to be exposed to Objective-C. For example:
 
 ```swift
 actor class MyActor {
@@ -259,9 +262,9 @@ Importing the same Objective-C API in two different ways causes some issues:
   @objc func lookupName() async -> String
   ```
   
-  The first and third signatures are identical except for being synchronous and asynchronous, respectively. The async/await design accounts for such overloading by favoring synchronous functions in synchronous contexts and asynchronous functions in asychronous contexts. This overloading should avoid breaking source compatibility.
+  The first and third signatures are identical except for being synchronous and asynchronous, respectively. The async/await design accounts for such overloading by favoring synchronous functions in synchronous contexts and asynchronous functions in asynchronous contexts. This overloading should avoid breaking source compatibility.
 
-* Another issue is when an asychronous completion-handler method is part of an Objective-C protocol. For example, the [`NSURLSessionDataDelegate` protocol](https://developer.apple.com/documentation/foundation/nsurlsessiondatadelegate?language=objc) includes this protocol requirement:
+* Another issue is when an asynchronous completion-handler method is part of an Objective-C protocol. For example, the [`NSURLSessionDataDelegate` protocol](https://developer.apple.com/documentation/foundation/nsurlsessiondatadelegate?language=objc) includes this protocol requirement:
 
   ```objc
   - (void)URLSession:(NSURLSession*)session 
@@ -286,4 +289,4 @@ completionHandler:(void (^)(NSURLSessionResponseDisposition disposition))complet
 
   Implementing both requirements would produce an error (due to two Swift methods having the same selector), but under the normal Swift rules implementing only one of the requirements will also produce an error (because the other requirement is unsatisfied). Swift’s checking of protocol conformances will be extended to handle the case where multiple (imported) requirements have the same Objective-C selector: in that case, only one of them will be required to be implemented.
   
-* Overriding methods that have been translated into both completion-handler and `async` versions have a similar problem to protocol requirements: a Swift subclass can either override the completion-handler version or the `async` version, but not both. Objective-C callers will always call to the subclass version of the method, but Swift callers to the "other" signature will not unless the subclass's method is marked with `@objc dynamic`. Swift can infer that the `async` overrides of such methods are `@objc dynamic` to avoid this problem (because such `async` methods are new code). However, inferring `@objc dynamic` on existing completion-handler overrides can change the behavior of programs and break subclasses of the subclasses, so at best the compiler can warn about this situtation.
+* Overriding methods that have been translated into both completion-handler and `async` versions have a similar problem to protocol requirements: a Swift subclass can either override the completion-handler version or the `async` version, but not both. Objective-C callers will always call to the subclass version of the method, but Swift callers to the "other" signature will not unless the subclass's method is marked with `@objc dynamic`. Swift can infer that the `async` overrides of such methods are `@objc dynamic` to avoid this problem (because such `async` methods are new code). However, inferring `@objc dynamic` on existing completion-handler overrides can change the behavior of programs and break subclasses of the subclasses, so at best the compiler can warn about this situation.
