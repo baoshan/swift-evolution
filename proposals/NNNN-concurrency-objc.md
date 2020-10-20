@@ -277,7 +277,7 @@ Importing the same Objective-C API in two different ways causes some issues:
 
   ```swift
   func URLSession(
-    _ NSURLSession, dataTask: NSURLSessionDataTask, didReceiveResponse: NSURLResponse,
+      _ NSURLSession, dataTask: NSURLSessionDataTask, didReceiveResponse: NSURLResponse,
       completionHandler: (NSURLSessionResponseDisposition) -> Void) { ... }
   ```
 
