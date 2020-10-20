@@ -269,8 +269,8 @@ Importing the same Objective-C API in two different ways causes some issues:
   ```objc
   - (void)URLSession:(NSURLSession*)session 
             dataTask:(NSURLSessionDataTask *)dataTask 
-  didReceiveResponse:(NSURLResponse *)response 
-completionHandler:(void (^)(NSURLSessionResponseDisposition disposition))completionHandler;
+            didReceiveResponse:(NSURLResponse *)response
+            completionHandler:(void (^)(NSURLSessionResponseDisposition disposition))completionHandler;
   ```
 
   Existing Swift code might implement this requirement in a conforming type using its completion-handler signature
