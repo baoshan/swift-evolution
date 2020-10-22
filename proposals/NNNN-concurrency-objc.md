@@ -87,7 +87,6 @@ When the completion handler parameter is inferred, the presence of an `NSError *
 The translation of an asynchronous Objective-C completion-handler method into an `async` Swift method follows the normal translation procedure, with the following alterations:
 
 * The completion handler parameter is removed from the parameter list of the translated Swift method.
-* If the completion handler parameter was the only parameter, and was inferred using the suffix rule described above, the suffix (e.g., `WithCompletionHandler`) is removed from the base name of the method.
 * If the method can deliver an error, it is `throws` in addition to being `async`.
 * The parameter types of the completion handler block type are translated into the result type of the `async` method, subject to the following additional rules:
   * If the method can deliver an error, the `NSError *` parameter is ignored. 
@@ -143,6 +142,13 @@ try withUnsafeContinuation { continuation in
       }
   })
 ```
+
+Additional rules are applied when translating Objective-C method name into a Swift name an `async` function:
+
+* If the completion handler parameter was the only parameter, and was inferred using the suffix rule described above, the suffix (e.g., `WithCompletionHandler`) is removed from the base name of the method.
+* If the completion handler parameter name has the suffix "WithCompletionHandler" or "WithCompletion", remove the suffix from the parameter name and append the remaining name to the prior argument name.
+* If the base name of the method starts with `get`, the `get` is removed and the leading initialisms are lowercased.
+* If the base name of the method ends with `Asynchronously`, that word is removed.
 
 ### Defining asynchronous `@objc` methods in Swift
 
