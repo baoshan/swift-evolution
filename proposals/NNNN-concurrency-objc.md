@@ -4,7 +4,7 @@
 * Authors: [Doug Gregor](https://github.com/DougGregor)
 * Review Manager: TBD
 * Status: **Awaiting implementation**
-* Implementation: Available in [recent `main` snapshots](https://swift.org/download/#snapshots) behind the flag `-Xfrontend -enable-experimental-concurrency`
+* Implementation: Partially available in [recent `main` snapshots](https://swift.org/download/#snapshots) behind the flag `-Xfrontend -enable-experimental-concurrency`
 
 ## Introduction
 
@@ -27,7 +27,7 @@ func fetchShareParticipant(withUserRecordID userRecordID: CKRecord.ID,
 Existing Swift code can call this API by passing a closure for the completion handler. This proposal provides an alternate Swift translation of the API into an `async` function, e.g.,
 
 ```swift
-func fetchShareParticipant(withUserRecordID userRecordID: CKRecord.ID) async throws -> CKShare.Participant?
+func fetchShareParticipant(withUserRecordID userRecordID: CKRecord.ID) async throws -> CKShare.Participant
 ```
 
 Swift callers can invoke `fetchShareParticipant(withUserRecordID:)` within an `await` expression:
@@ -90,13 +90,13 @@ The translation of an asynchronous Objective-C completion-handler method into an
 * If the method can deliver an error, it is `throws` in addition to being `async`.
 * The parameter types of the completion handler block type are translated into the result type of the `async` method, subject to the following additional rules:
   * If the method can deliver an error, the `NSError *` parameter is ignored. 
-  * If the method can deliver an error and a given parameter has the `_Nullable_on_error` nullability qualifier (see the section on Objective-C attributes below), it will be imported as non-optional.
+  * If the method can deliver an error and a given parameter has the `_Nullable_result` nullability qualifier (see the section on Objective-C attributes below), it will be imported as optional. Otherwise, it will be imported as non-optional.
   * If there are multiple parameter types, they will be combined into a tuple type.
 
 The following [AVFoundation](https://developer.apple.com/documentation/avfoundation/avassetimagegenerator/1388100-generatecgimagesasynchronously) API (modified slightly for exposition purposes) demonstrates how the inference rule plays out:
 
 ```objc
-typedef void (^AVAssetImageGeneratorCompletionHandler)(CMTime, CGImageRef _Nullable_on_error, CMTime, AVAssetImageGeneratorResult, NSError * _Nullable);
+typedef void (^AVAssetImageGeneratorCompletionHandler)(CMTime, CGImageRef _Nullable, CMTime, AVAssetImageGeneratorResult, NSError * _Nullable);
 
 // ...
 
@@ -166,7 +166,7 @@ will translate into the following Objective-C method:
 
 The Objective-C method implementation synthesized by the compiler will create a detached task that calls the `async` Swift method `perform(operation:)` with the given string, then (if the completion handler argument is not `nil`) forwards the result to the completion handler.
 
-For an `async throws` method, the completion handler is extended with an `NSError *` parameter to indicate the error, and any non-nullable pointer type parameters are made `_Nullable`. For example, given:
+For an `async throws` method, the completion handler is extended with an `NSError *` parameter to indicate the error, any non-nullable pointer type parameters are made `_Nullable`, and any nullable pointer type parameters are made `_Nullable_result`. For example, given:
 
 ```swift
 @objc func performDangerousTrick(operation: String) async throws -> String { ... }
@@ -178,7 +178,7 @@ the resulting Objective-C method will have the following signature:
 -(void)performDangerousTrickWithOperation(NSString * _Nonnull)operation completionHandler:(void (^ _Nullable)(NSString * _Nullable_on_error, NSError * _Nullable))completionHandler;
 ```
 
-Again, the synthesized Objective-C method implementation will create a detached task that calls the `async throws` method `performDangerousTrick(operation:)`. If the method returns normally, the `String` result will be delivered to the completion handler in the first parameter and the second parameter (`NSError *`) will be passed `nil`. If the method throws, the first parameter will be passed `nil` (which is why it has been made `_Nullable_on_error` despite being non-optional in Swift) and the second parameter will receive the error. If there are non-pointer parameters, they will be passed zero-initialized memory in the non-error arguments to provide consistent behavior for callers. This can be demonstrated with Swift pseudo-code:
+Again, the synthesized Objective-C method implementation will create a detached task that calls the `async throws` method `performDangerousTrick(operation:)`. If the method returns normally, the `String` result will be delivered to the completion handler in the first parameter and the second parameter (`NSError *`) will be passed `nil`. If the method throws, the first parameter will be passed `nil` (which is why it has been made `_Nullable` despite being non-optional in Swift) and the second parameter will receive the error. If there are non-pointer parameters, they will be passed zero-initialized memory in the non-error arguments to provide consistent behavior for callers. This can be demonstrated with Swift pseudo-code:
 
 ```swift
 // Synthesized by the compiler
@@ -239,7 +239,7 @@ Fortunately, because the compiler itself is synthesizing the block that will be 
 
 The transformation of Objective-C completion-handler-based APIs to async Swift APIs could benefit from the introduction of additional annotations (in the form of attributes) to guide the process. For example:
 
-* `_Nullable_on_error`. Like `_Nullable`, indicates that a pointer can be null (or `nil`). `_Nullable_on_error` differs from `_Nullable` only for parameters to completion handler blocks. When the completion handler block's parameters are translated into the result type of an `async` method, the corresponding result will be non-optional.
+* `_Nullable_result`. Like `_Nullable`, indicates that a pointer can be null (or `nil`). `_Nullable_result` differs from `_Nullable` only for parameters to completion handler blocks. When the completion handler block's parameters are translated into the result type of an `async` method, the corresponding result will be optional.
 * `__attribute__((swift_async(...))`. An attribute to control the translation of an asynchronous completion-handler method to an `async` function. It has several operations within the parentheses:
   * `__attribute__((swift_async(none))`. Disables the translation to `async`.  
   * `__attribute__((swift_async(C))`. Specifies that the method should be translated into an `async` method, using the parameter at index `C` as the completion handler parameter.
