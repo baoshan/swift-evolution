@@ -175,7 +175,7 @@ For an `async throws` method, the completion handler is extended with an `NSErro
 the resulting Objective-C method will have the following signature:
 
 ```objc
--(void)performDangerousTrickWithOperation(NSString * _Nonnull)operation completionHandler:(void (^ _Nullable)(NSString * _Nullable_on_error, NSError * _Nullable))completionHandler;
+-(void)performDangerousTrickWithOperation(NSString * _Nonnull)operation completionHandler:(void (^ _Nullable)(NSString * _Nullable, NSError * _Nullable))completionHandler;
 ```
 
 Again, the synthesized Objective-C method implementation will create a detached task that calls the `async throws` method `performDangerousTrick(operation:)`. If the method returns normally, the `String` result will be delivered to the completion handler in the first parameter and the second parameter (`NSError *`) will be passed `nil`. If the method throws, the first parameter will be passed `nil` (which is why it has been made `_Nullable` despite being non-optional in Swift) and the second parameter will receive the error. If there are non-pointer parameters, they will be passed zero-initialized memory in the non-error arguments to provide consistent behavior for callers. This can be demonstrated with Swift pseudo-code:
