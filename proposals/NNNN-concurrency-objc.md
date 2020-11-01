@@ -57,11 +57,9 @@ The proposed solution provides interoperability between Swift's concurrency cons
 
 * Translate Objective-C completion-handler methods into `async` methods in Swift.
 * Allow `async` methods defined in Swift to be `@objc`, in which case they are exported as completion-handler methods.
-* Provide inference rules for asynchronous handlers.
 * Provide Objective-C attributes to tune the translation of Objective-C APIs for concurrency:
   * Control over how completion-handler-based APIs are translated into `async` Swift functions.
   * Specify when an Objective-C APIs is part of a particular global actor.
-  * Specify when an Objective-C API is intended to be an asynchronous handler.
 
 The detailed design section describes the specific rules and heuristics being applied. However, the best way to evaluate the overall effectiveness of the translation is to see it's effect over a large number of Objective-C APIs. [This pull request](https://github.com/DougGregor/swift-concurrency-objc/pull/1) demonstrates the effect that this proposal has on the Swift translations of Objective-C APIs across the Apple iOS, macOS, tvOS, and watchOS SDKs.
 
@@ -206,27 +204,7 @@ actor class MyActor {
   @objc func synchronous() { } // error: part of actor's isolation domain
   @objc func asynchronous() async { } // okay: asynchronous
   @objc @actorIndependent func independent() { } // okay: actor-independent
-  @objc @asyncHandler func handler() { } // okay: asynchronously executed
 }
-```
-
-### Inference of @asyncHandler on Objective-C methods
-
-Asynchronous handlers are synchronous functions whose bodies execute asynchronously. The `@asyncHandler` attribute can be applied to a requirement of a protocol and will then be inferred for a method that satisfies that requirement. This allows one to easily use asynchronous constructs when receiving a synchronous callback that requires no immediate action.
-
-Objective-C delegate protocols often use "did" methods to report on an action that occurred but doesn't necessarily need an immediate response. For example, the [`UICollectionViewDelegate` protocol](https://developer.apple.com/documentation/uikit/uicollectionviewdelegate) contains a number of "did" methods such as:
-
-```objc
-- (void)collectionView:(UICollectionView *)collectionView 
-didHighlightItemAtIndexPath:(NSIndexPath *)indexPath;
-```
-
-For Objective-C protocol methods with the word "did" in their name, either anywhere in the first selector piece or at the start of a subsequent selector piece, and that meet the form required for `@asyncHandler` (`void` return, no `inout` parameters, etc.), the `@asyncHandler` attribute will be inferred on the Swift API. For example, the above will be translate to:
-
-```swift
-@asyncHandler
-func collectionView(_ collectionView: UICollectionView, 
-          didHighlightItemAt indexPath: IndexPath)
 ```
 
 ### Completion handlers must be called exactly once
@@ -244,7 +222,7 @@ The transformation of Objective-C completion-handler-based APIs to async Swift A
   * `__attribute__((swift_async(none))`. Disables the translation to `async`.  
   * `__attribute__((swift_async(C))`. Specifies that the method should be translated into an `async` method, using the parameter at index `C` as the completion handler parameter.
   * `__attribute__((swift_async(C, throws))`. Specifies that the method should be translated into an `async throws` method, using the parameter at index `C` as the completion handler.
-* `__attribute__((swift_attr("swift attribute")))`. A general-purpose Objective-C attribute to allow one to provide Swift attributes directly. In the context of concurrency, this allows Objective-C APIs to be described as `@asyncHandler` or to put them within a global actor (e.g., `@UIActor`).
+* `__attribute__((swift_attr("swift attribute")))`. A general-purpose Objective-C attribute to allow one to provide Swift attributes directly. In the context of concurrency, this allows Objective-C APIs to be annotated with a global actor (e.g., `@UIActor`).
 * `__attribute__((swift_name(async="method(param1:param2:)")))`. Specifies the Swift name that should be used for the `async` translation of the API.
 
 
