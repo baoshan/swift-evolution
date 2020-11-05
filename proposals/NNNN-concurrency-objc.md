@@ -33,7 +33,7 @@ func fetchShareParticipant(withUserRecordID userRecordID: CKRecord.ID) async thr
 Swift callers can invoke `fetchShareParticipant(withUserRecordID:)` within an `await` expression:
 
 ```swift
-guard let participant = await try container.fetchShareParticipant(withUserRecordID: user) else {
+guard let participant = await try? container.fetchShareParticipant(withUserRecordID: user) else {
   return nil
 }
 ```
