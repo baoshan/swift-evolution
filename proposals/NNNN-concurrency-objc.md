@@ -135,7 +135,7 @@ becomes pseudo-code similar to
 
 ```swift
 try withUnsafeContinuation { continuation in 
-    session.generateCGImages(
+    session.generateCGImagesAsynchronously(
         forTimes: times, 
         completionHandler: { (requestedTime, image, actualTime, result, error) in
             if let error = error {
