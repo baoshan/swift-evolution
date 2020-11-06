@@ -229,10 +229,10 @@ Fortunately, because the compiler itself is synthesizing the block that will be 
 The transformation of Objective-C completion-handler-based APIs to async Swift APIs could benefit from the introduction of additional annotations (in the form of attributes) to guide the process. For example:
 
 * `_Nullable_result`. Like `_Nullable`, indicates that a pointer can be null (or `nil`). `_Nullable_result` differs from `_Nullable` only for parameters to completion handler blocks. When the completion handler block's parameters are translated into the result type of an `async` method, the corresponding result will be optional.
-* `__attribute__((swift_async(...))`. An attribute to control the translation of an asynchronous completion-handler method to an `async` function. It has several operations within the parentheses:
-  * `__attribute__((swift_async(none))`. Disables the translation to `async`.  
-  * `__attribute__((swift_async(C))`. Specifies that the method should be translated into an `async` method, using the parameter at index `C` as the completion handler parameter.
-  * `__attribute__((swift_async(C, throws))`. Specifies that the method should be translated into an `async throws` method, using the parameter at index `C` as the completion handler.
+* `__attribute__((swift_async(...)))`. An attribute to control the translation of an asynchronous completion-handler method to an `async` function. It has several operations within the parentheses:
+  * `__attribute__((swift_async(none)))`. Disables the translation to `async`.  
+  * `__attribute__((swift_async(C)))`. Specifies that the method should be translated into an `async` method, using the parameter at index `C` as the completion handler parameter.
+  * `__attribute__((swift_async(C, throws)))`. Specifies that the method should be translated into an `async throws` method, using the parameter at index `C` as the completion handler.
 * `__attribute__((swift_attr("swift attribute")))`. A general-purpose Objective-C attribute to allow one to provide Swift attributes directly. In the context of concurrency, this allows Objective-C APIs to be annotated with a global actor (e.g., `@UIActor`).
 * `__attribute__((swift_name(async="method(param1:param2:)")))`. Specifies the Swift name that should be used for the `async` translation of the API.
 
